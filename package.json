@@ -1,0 +1,25 @@
+{
+  "name": "terarprise",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "wrangler deploy --dry-run",
+    "db:migrate": "wrangler d1 migrations apply terarprise --local",
+    "db:seed": "wrangler d1 execute terarprise --local --file=./scripts/seed.sql",
+    "test:smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.0.0"
+  }
+}
