@@ -48,10 +48,18 @@ SQL はローカルで `npx wrangler d1 execute terarprise --local --file=<SQL�
 - `GET /health`: D1 のマイグレーション済みテーブルへの読み取りを確認。
 - `GET /api/organizations/:id/me`: 現在のユーザーと役割。対象組織に紐づくセッションが必要。
 - `GET /api/organizations/:id/admin`: 管理者権限の検証。成功時に監査イベントを記録。
-- `GET /api/organizations/:id/audit`: 管理者のみ、当該組織の直近100件を取得。
+- `GET /api/organizations/:id/audit`: 管理者のみ、当該組織の監査ログを新しい順に取得。既定100件、`limit=1`〜`100` で件数を指定。
 - `POST /auth/logout`: `Origin` が APP_ORIGIN と一致する場合のみセッション削除。
 
 OIDC は state とブラウザ Cookie の照合、PKCE、nonce、署名・issuer・audience・有効期限の検証を実施します。state は10分間有効で単回利用。セッションは8時間で期限切れになり、D1 にはトークンの SHA-256 ハッシュのみを保存します。本番 HTTPS では `__Host-`、Secure、HttpOnly、SameSite=Lax Cookie を使用します。組織所属・有効状態・役割を毎リクエスト確認し、`memberships.active = 0` の変更は既存セッションにも即時反映されます。
+
+### 監査ログの取得
+
+レスポンス本文は従来どおり `{id, user_id, action, created_at}` の配列です。続きがある場合だけ、`Link: </api/organizations/acme/audit?limit=20&cursor=...>; rel="next"` ヘッダーを返します。ヘッダーの URL に同じセッションで GET すると次のページを取得できます。カーソルは組織と最後のレコードの時刻・IDを含み、同じ秒のログも取りこぼさず取得します。新しいログの追加は、取得済みページより古いログを辿る操作に影響しません。別組織のカーソルや不正な件数・カーソルは400を返します。各ページで管理者権限を再確認します。
+
+記録するイベントは `login`、`admin.access`、`logout` です。ログアウト記録とセッション削除は同一トランザクションで行い、削除済み・期限切れ・未知のセッションからは記録しません。Cookie、OIDCコード、トークン、client secret は監査ログに保存しません。
+
+既存環境では `npm run db:migrate`（本番は `npx wrangler d1 migrations apply terarprise --remote`）で `0002_audit_pagination.sql` の組織・時刻・IDインデックスを適用してください。保持期限による自動削除と、失敗した認証・認可の記録は後続の対象です。
 
 ## Cloudflare に配置
 
@@ -67,4 +75,4 @@ OIDC は state とブラウザ Cookie の照合、PKCE、nonce、署名・issuer
 
 この初期実装は OIDC、組織分離、RBAC、セッション、最小限の監査 API が対象です。本番 IAM 製品としての完成を意味しません。
 
-次に、実際の Entra ID / Okta との相互運用性を確認し、SCIM 2.0（ユーザー作成・変更・停止）、監査イベントの拡充・保持・ページング、SSO 管理画面を追加します。続いて SAML、MFA / ステップアップ、ABAC を個別に検証します。IdP ログアウト連携、レート制限、設定変更の運用設計も今後の対象です。
+次に、実際の Entra ID / Okta との相互運用性を確認し、SCIM 2.0（ユーザー作成・変更・停止）、監査イベントの追加・保持、SSO 管理画面を追加します。続いて SAML、MFA / ステップアップ、ABAC を個別に検証します。IdP ログアウト連携、レート制限、設定変更の運用設計も今後の対象です。

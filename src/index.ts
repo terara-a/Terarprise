@@ -35,6 +35,35 @@ async function provider(env: Env, org: string) {
 async function audit(env: Env, identity: Identity, action: string) {
   await env.DB.prepare('INSERT INTO audit_events VALUES (?, ?, ?, ?, ?)').bind(random(), identity.organization_id, identity.user_id, action, now()).run();
 }
+type AuditEvent = { id: string; user_id: string | null; action: string; created_at: number };
+async function auditPage(env: Env, org: string, url: URL): Promise<Response> {
+  const rawLimit = url.searchParams.get('limit') ?? '100';
+  if (!/^[1-9]\d{0,2}$/.test(rawLimit) || Number(rawLimit) > 100) fail(400, 'Limit must be an integer between 1 and 100');
+  const limit = Number(rawLimit);
+  let cursor: { organization_id: string; created_at: number; id: string } | undefined;
+  if (url.searchParams.has('cursor')) {
+    try {
+      const value = url.searchParams.get('cursor')!;
+      if (value.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
+      cursor = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), char => char.charCodeAt(0))));
+      if (!cursor || cursor.organization_id !== org || !Number.isSafeInteger(cursor.created_at) || cursor.created_at < 0 || !/^[a-f0-9]{64}$/.test(cursor.id)) throw new Error();
+    } catch { fail(400, 'Invalid audit cursor'); }
+  }
+  const query = cursor
+    ? env.DB.prepare('SELECT id, user_id, action, created_at FROM audit_events WHERE organization_id = ? AND (created_at, id) < (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?').bind(org, cursor.created_at, cursor.id, limit + 1)
+    : env.DB.prepare('SELECT id, user_id, action, created_at FROM audit_events WHERE organization_id = ? ORDER BY created_at DESC, id DESC LIMIT ?').bind(org, limit + 1);
+  const events = (await query.all<AuditEvent>()).results;
+  const response = json(events.slice(0, limit));
+  if (events.length > limit) {
+    const last = events[limit - 1];
+    const next = new URL(url.pathname, url.origin);
+    next.searchParams.set('limit', String(limit));
+    const value = new TextEncoder().encode(JSON.stringify({ organization_id: org, created_at: last.created_at, id: last.id }));
+    next.searchParams.set('cursor', btoa(String.fromCharCode(...value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+    response.headers.set('Link', `<${next.pathname}${next.search}>; rel="next"`);
+  }
+  return response;
+}
 export async function authorize(req: Request, env: Env, org: string, admin = false): Promise<Identity> {
   const token = cookie(req, env, 'session');
   if (!token) fail(401, 'Sign in required');
@@ -110,13 +139,20 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (req.method === 'POST' && url.pathname === '/auth/logout') {
     if (req.headers.get('Origin') !== env.APP_ORIGIN) fail(403, 'Invalid request origin');
     const token = cookie(req, env, 'session');
-    if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(await hash(token)).run();
+    if (token) {
+      const tokenHash = await hash(token);
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO audit_events (id, organization_id, user_id, action, created_at)
+          SELECT ?, organization_id, user_id, 'logout', ? FROM sessions WHERE token_hash = ? AND expires_at > ?`).bind(random(), now(), tokenHash, now()),
+        env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash),
+      ]);
+    }
     return new Response(null, {status:204, headers:{'Set-Cookie':setCookie(env,'session','',0)}});
   }
   const match = /^\/api\/organizations\/([^/]+)\/(me|admin|audit)$/.exec(url.pathname);
   if (req.method === 'GET' && match) {
     const identity = await authorize(req, env, decodeURIComponent(match[1]), match[2] !== 'me');
-    if (match[2] === 'audit') return json((await env.DB.prepare('SELECT id, user_id, action, created_at FROM audit_events WHERE organization_id = ? ORDER BY created_at DESC, id DESC LIMIT 100').bind(identity.organization_id).all()).results);
+    if (match[2] === 'audit') return auditPage(env, identity.organization_id, url);
     if (match[2] === 'admin') { await audit(env, identity, 'admin.access'); return json({message:'Administrator access granted', ...identity}); }
     return json(identity);
   }
