@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "terarprise",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-30",
+  "vars": {"APP_ORIGIN": "http://localhost:8787"},
+  "d1_databases": [{"binding": "DB", "database_name": "terarprise", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations"}]
+}
